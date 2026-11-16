@@ -9,6 +9,11 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    # 只改文档 / 换行符规则时不重新编译，省一次等待
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - '.gitattributes'
 
 jobs:
   build:
