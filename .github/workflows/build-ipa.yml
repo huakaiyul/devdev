@@ -1,0 +1,94 @@
+name: Build IPA
+
+# 触发方式：
+#   1) 网页上点 “Run workflow”（workflow_dispatch）
+#   2) 推送到 main 分支
+# 产物：Artifacts 里的 GrabDesk-ipa（内含未签名 GrabDesk.ipa，保留 7 天）
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    env:
+      SCHEME: GrabDesk
+      PROJECT: GrabDesk.xcodeproj
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 打印 Xcode 版本
+        run: xcodebuild -version
+
+      - name: 安装 XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 编译（关闭签名）
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO \
+            build -quiet
+
+      - name: 打包成 ipa
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/${SCHEME}.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "没有找到编译产物：$APP_PATH"
+            find build/Build/Products -maxdepth 2 -name "*.app" || true
+            exit 1
+          fi
+          rm -rf Payload GrabDesk-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          # ipa 的本质就是 zip：根目录下必须有一个 Payload/ 文件夹
+          zip -qry GrabDesk-unsigned.ipa Payload
+          ls -lh GrabDesk-unsigned.ipa
+          unzip -l GrabDesk-unsigned.ipa | head -20
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrabDesk-ipa
+          path: GrabDesk-unsigned.ipa
+          retention-days: 7
+          if-no-files-found: error
+
+# ---------------------------------------------------------------------------
+# 如果你有付费开发者账号（$99/年），想直接产出装机即用的签名 ipa，
+# 在下面追加一个 job，并把证书/描述文件存进仓库 Secrets：
+#
+#   P12_BASE64      开发者证书 .p12 的 base64
+#   P12_PASSWORD    .p12 密码
+#   PROFILE_BASE64  .mobileprovision 的 base64
+#   TEAM_ID         10 位 Team ID
+#   BUNDLE_ID       例如 com.banxia.grabdesk
+#   UDIDS           逗号分隔的设备 UDID（ad-hoc 分发必须预先登记）
+#
+# 需要替换 ExportOptions.plist 里的 teamID / bundleId / provisioningProfiles。
+# 有账号了告诉我，我把这一段补齐并跑通。
+# ---------------------------------------------------------------------------
